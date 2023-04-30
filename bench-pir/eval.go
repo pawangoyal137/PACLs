@@ -13,8 +13,16 @@ import (
 
 func main() {
 
-	n := []int{16384, 32768, 65536, 131072, 262144, 524288, 1048576, 2097152, 4194304}
-	byteParams := []int{1024, 2048}
+	// n := []int{16384, 32768, 65536, 131072, 262144, 524288, 1048576, 2097152, 4194304}
+	n := []int{1<<10}
+	var byteParams []int
+	start := 20480
+	byteParams = append(byteParams, start)
+    for i := 0; i < 4; i += 1 {
+		start = start * 2
+		fmt.Printf("%v", start)
+        byteParams = append(byteParams, start)
+    }
 	numTrials := 10
 
 	i := 0
@@ -30,6 +38,7 @@ func main() {
 			}
 			experiment.ServerXorProcessingMS = make([]int64, 0)
 			experiment.ServerPIRProcessingMS = make([]int64, 0)
+			experiment.ServerPIRKeywordBaselineProcessingMS = make([]int64, 0)
 			experiment.ServerPIRKeywordProcessingMS = make([]int64, 0)
 			experiment.ServerPIRPACLProcessingMS = make([]int64, 0)
 
@@ -37,18 +46,21 @@ func main() {
 				pirTimeMS, bits := benchmarkPIR(dbSize, slots)
 				pirPACLTimeMS := benchmarkPIRPACL(dbSize, slots, bits) // re-use expanded bits to avoid double counting DPF time
 				xorTimeMS := benchmarkXor(dbSize, slots, bits)
+				pirKeywordBaselineTimeMS := benchmarkPIRKeywordsBaseline(dbSize, slots)
 				pirKeywordTimeMS := benchmarkPIRKeywords(dbSize, slots)
 				experiment.ServerXorProcessingMS = append(experiment.ServerXorProcessingMS, xorTimeMS)
 				experiment.ServerPIRProcessingMS = append(experiment.ServerPIRProcessingMS, pirTimeMS)
+				experiment.ServerPIRKeywordBaselineProcessingMS = append(experiment.ServerPIRKeywordBaselineProcessingMS, pirKeywordBaselineTimeMS)
 				experiment.ServerPIRKeywordProcessingMS = append(experiment.ServerPIRKeywordProcessingMS, pirKeywordTimeMS)
 				experiment.ServerPIRPACLProcessingMS = append(experiment.ServerPIRPACLProcessingMS, pirPACLTimeMS)
 				fmt.Printf("Finished trial %v of %v\n", trial, numTrials)
 			}
 
-			fmt.Printf("XOR           (%v bytes per item with %v item DB): %v ms\n", slotSize, dbSize, experiment.ServerXorProcessingMS[0])
-			fmt.Printf("PIR           (%v bytes per item with %v item DB): %v ms\n", slotSize, dbSize, experiment.ServerPIRProcessingMS[0])
-			fmt.Printf("PIR Keyword   (%v bytes per item with %v item DB): %v ms\n", slotSize, dbSize, experiment.ServerPIRKeywordProcessingMS[0])
-			fmt.Printf("PIRPACL       (%v bytes per item with %v item DB): %v ms\n", slotSize, dbSize, experiment.ServerPIRPACLProcessingMS[0])
+			fmt.Printf("XOR            (%v bytes per item with %v item DB): %v us\n", slotSize, dbSize, experiment.ServerXorProcessingMS[0])
+			fmt.Printf("PIR            (%v bytes per item with %v item DB): %v us\n", slotSize, dbSize, experiment.ServerPIRProcessingMS[0])
+			fmt.Printf("PIR Keyword BL (%v bytes per item with %v item DB): %v us\n", slotSize, dbSize, experiment.ServerPIRKeywordBaselineProcessingMS[0])
+			fmt.Printf("PIR Keyword    (%v bytes per item with %v item DB): %v us\n", slotSize, dbSize, experiment.ServerPIRKeywordProcessingMS[0])
+			fmt.Printf("PIRPACL        (%v bytes per item with %v item DB): %v us\n", slotSize, dbSize, experiment.ServerPIRPACLProcessingMS[0])
 
 			experimentJSON, err := json.MarshalIndent(experiment, "", " ")
 			if err != nil {
@@ -72,7 +84,7 @@ func benchmarkXor(dbSize int, slots []*Slot, bits []byte) int64 {
 		}
 	}
 
-	return time.Since(start).Milliseconds()
+	return time.Since(start).Microseconds()
 }
 
 func benchmarkPIR(dbSize int, slots []*Slot) (int64, []byte) {
@@ -93,7 +105,7 @@ func benchmarkPIR(dbSize int, slots []*Slot) (int64, []byte) {
 		}
 	}
 
-	return time.Since(start).Milliseconds(), shares
+	return time.Since(start).Microseconds(), shares
 }
 
 func benchmarkPIRKeywords(dbSize int, slots []*Slot) int64 {
@@ -101,7 +113,7 @@ func benchmarkPIRKeywords(dbSize int, slots []*Slot) int64 {
 	client := dpf.ClientDPFInitialize(prfKey)
 
 	// PIR-by-keywords requires setting DPF domain to 128 bits for security
-	keyA, _ := client.GenDPFKeys(12345, 128)
+	keyA, _ := client.GenDPFKeys(12345, 48)
 	server := dpf.ServerDPFInitialize(client.PrfKey)
 
 	// precompute the random values and DPF inputs.
@@ -122,7 +134,36 @@ func benchmarkPIRKeywords(dbSize int, slots []*Slot) int64 {
 		}
 	}
 
-	return time.Since(start).Milliseconds()
+	return time.Since(start).Microseconds()
+}
+
+func benchmarkPIRKeywordsBaseline(dbSize int, slots []*Slot) int64 {
+	prfKey := dpf.GeneratePRFKey()
+	client := dpf.ClientDPFInitialize(prfKey)
+
+	// PIR-by-keywords requires setting DPF domain to 128 bits for security
+	keyA, _ := client.GenDPFKeys(12345, 10)
+	server := dpf.ServerDPFInitialize(client.PrfKey)
+
+	// precompute the random values and DPF inputs.
+	// Note: DPF evaluation time isn't dependent on input
+	x := make([]uint64, dbSize)
+	for i := 0; i < dbSize; i++ {
+		x[i] = uint64(i) * uint64(i) % uint64(dbSize)
+	}
+
+	start := time.Now()
+
+	shares := server.BatchEval(keyA, x)
+
+	accumulator := NewEmptySlot(len(slots[0].Data))
+	for i := 0; i < len(slots); i++ {
+		if shares[i]%2 == 1 {
+			XorSlots(accumulator, slots[i])
+		}
+	}
+
+	return time.Since(start).Microseconds()
 }
 
 func benchmarkPIRPACL(dbSize int, slots []*Slot, bits []byte) int64 {
@@ -135,7 +176,7 @@ func benchmarkPIRPACL(dbSize int, slots []*Slot, bits []byte) int64 {
 			XorSlots(accumulator, slots[i])
 		}
 	}
-	xortime := time.Since(start).Milliseconds()
+	xortime := time.Since(start).Microseconds()
 
 	return benchmarkPACL(dbSize) + xortime
 }
@@ -154,5 +195,5 @@ func benchmarkPACL(dbsize int) int64 {
 	auditA := kl.Audit(shares[0])
 	kl.CheckAudit(auditA, auditB)
 
-	return time.Since(start).Milliseconds()
+	return time.Since(start).Microseconds()
 }
