@@ -14,16 +14,16 @@ import (
 func main() {
 
 	// n := []int{16384, 32768, 65536, 131072, 262144, 524288, 1048576, 2097152, 4194304}
-	n := []int{1<<10}
+	n := []int{1<<20}
 	var byteParams []int
-	start := 20480
-	byteParams = append(byteParams, start)
-    for i := 0; i < 4; i += 1 {
-		start = start * 2
-		fmt.Printf("%v", start)
-        byteParams = append(byteParams, start)
-    }
-	numTrials := 10
+	// run experiments for 16B, 64B, 256B, 1KiB, 4KiB, 8KiB, 16KiB
+    for i := 4; i <= 14; i += 2 {
+		power := 1<<i
+        byteParams = append(byteParams, power)
+	}
+	
+	byteParams = append(byteParams, (1<<13))
+	numTrials := 5
 
 	i := 0
 	for _, dbSize := range n {
